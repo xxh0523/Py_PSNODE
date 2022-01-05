@@ -21,23 +21,24 @@ from torch.utils.data import DataLoader
 from neural_dae import ODE_Curves_Sample, ODE_Event, DE_Func, ODE_Base
 from neural_dae import Euler, Midpoint, RK4
 import matplotlib as mpl
+mpl.use('Agg')
 import matplotlib.pyplot as plt
 import math
 
 
 # debug
-flg_debug = True
-data_path = '/home/xiaotannan/pythonPS/00saved_results/samples/generator_epie/300_gen31_all_4000_nolimit_samples_gen_0'
-is_training = True
+flg_debug = False
+data_path = '/home/xiaotannan/pythonPS/00saved_results/samples/generator_epie/300_gen31_all_4000_masked_samples_gen_0'
+is_training = False
 is_testing = False
-# p_model = '/home/xiaotannan/pythonPS/00saved_results/models/neural_dae/neural_gen_0_20211128_4/model_checkpoint.400'
-p_model = '00saved_results/models/neural_dae/test'
+p_model = '/home/xiaotannan/pythonPS/00saved_results/models/neural_dae/neural_gen_0_20211219_4/model_checkpoint.400'
+# p_model = '00saved_results/models/neural_dae/test'
 device_target = 'cpu'
 ncols = 80
 
 # pre settings
-training_sample_num = 3200
-batch_size = 64
+training_sample_num = 800
+batch_size = 16
 testing_sample_num = 800
 hidden_dim = 64
 learning_rate = 0.005
@@ -50,9 +51,20 @@ lamda_x_loss = 1
 gradient_clip = 10
 
 # fig set
-pic_num = 2
+pic_num = 5
 line_width = 1
 mark_size = 2
+
+
+class Init_Func(nn.Module):
+    def __init__(self, x_dim: int, z_dim: int, v_dim: int, i_dim: int, hidden_dim: int):
+        super(Init_Func, self).__init__()
+        self.init_fun = nn.Sequential(nn.Linear(z_dim+v_dim+i_dim, hidden_dim), nn.ELU(),
+                                      nn.Linear(hidden_dim, hidden_dim), nn.ELU(),
+                                      nn.Linear(hidden_dim, x_dim))
+    
+    def forward(self, z0: torch.Tensor, v0: torch.Tensor, i0: torch.Tensor):
+        return self.init_fun(torch.cat([z0, v0, i0], dim=-1))
 
 
 class DE_Func(nn.Module):
@@ -100,22 +112,26 @@ class DAE_Model(nn.Module):
                                        nn.Linear(hidden_dim, hidden_dim))
         self.i_decoder = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ELU(),
                                        nn.Linear(hidden_dim, i_dim))
+        self.init_func = Init_Func(x_dim=x_dim, z_dim=z_dim, v_dim=v_dim, i_dim=i_dim, hidden_dim=hidden_dim)
         self.de_func = DE_Func(x_dim=x_dim, z_dim=z_dim, v_dim=v_dim, i_dim=i_dim, hidden_dim=hidden_dim)
         self.ae_func = AE_Func(x_dim=x_dim, z_dim=z_dim, v_dim=v_dim, i_dim=i_dim, hidden_dim=hidden_dim)
         self.solver = Euler()
         self.event = DAE_Event()
         
     def forward(self, t: torch.Tensor, x: torch.Tensor, z: torch.Tensor, v: torch.Tensor, i: torch.Tensor, event_t: torch.Tensor, z_jump: torch.Tensor, v_jump: torch.Tensor):
+        x0 = self.init_func(z.permute(1,0,2)[0], v.permute(1,0,2)[0], i.permute(1,0,2)[0])
+        Xh0 = self.x_encoder(x0)
         Xh = self.x_encoder(x).permute(1,0,2)
         Zh = z.permute(1,0,2) if self.z_encoder is None else self.z_encoder(z).permute(1,0,2)
         Vh = self.v_encoder(v).permute(1,0,2)
         Ih = self.i_encoder(i).permute(1,0,2)
-        all_initial = torch.cat((Xh[0], Zh[0], Vh[0], Ih[0]), dim=-1)
+        all_initial = torch.cat((Xh0, Zh[0], Vh[0], Ih[0]), dim=-1)
         Zh_jump = z_jump if self.z_encoder is None else self.z_encoder(z_jump)
         Vh_jump = self.v_encoder(v_jump)
         self.event.set_event(t=event_t, z=Zh_jump, v=Vh_jump)
         # batch, time, variable -> time, batch, variable
-        Xh_solution, Ih_solution = self.solver.integrate_DAE(x_func=self.de_func,
+        Xh_solution, Ih_solution = self.solver.integrate_DAE(x_init=Xh0,
+                                                             x_func=self.de_func,
                                                              i_func=self.ae_func,
                                                              t=t.permute(1,0,2), 
                                                              x=Xh, 
@@ -126,7 +142,11 @@ class DAE_Model(nn.Module):
                                                              event_fn=self.event.event_fn, 
                                                              jump_change_fn=self.event.jump_change_fn)
         # time, batch, variable -> batch, time, variable
-        return self.x_decoder(Xh_solution).permute(1, 0, 2), self.i_decoder(Ih_solution).permute(1, 0, 2)
+        x_pred = self.x_decoder(Xh_solution)
+        x_pred[0] = x0
+        x_re = self.x_decoder(Xh)
+        i_re = self.i_decoder(Ih)
+        return x_pred.permute(1, 0, 2), self.i_decoder(Ih_solution).permute(1, 0, 2), x_re.permute(1, 0, 2), i_re.permute(1, 0, 2)
     
     def save_model(self, path: pathlib.Path):
         if not path.exists(): path.mkdir()
@@ -136,14 +156,17 @@ class DAE_Model(nn.Module):
         sm.save(str(path / 'x_encoder.pt'))
         sm = torch.jit.script(self.x_decoder)
         sm.save(str(path / 'x_decoder.pt'))
-        sm = torch.jit.script(self.z_encoder)
-        sm.save(str(path / 'z_encoder.pt'))
+        if self.z_encoder is not None:
+            sm = torch.jit.script(self.z_encoder)
+            sm.save(str(path / 'z_encoder.pt'))
         sm = torch.jit.script(self.v_encoder)
         sm.save(str(path / 'v_encoder.pt'))
         sm = torch.jit.script(self.i_encoder)
         sm.save(str(path / 'i_encoder.pt'))
         sm = torch.jit.script(self.i_decoder)
         sm.save(str(path / 'i_decoder.pt'))
+        sm = torch.jit.script(self.init_func)
+        sm.save(str(path / 'init_func.pt'))
         sm = torch.jit.script(self.de_func)
         sm.save(str(path / 'de_func.pt'))
         sm = torch.jit.script(self.ae_func)
@@ -166,18 +189,21 @@ def evalute_model(model: DAE_Model, eval_dataset: DAE_Curves_Sample, eval_datalo
         t, x, z, v, i, event_t, z_jump, v_jump, mask = sample_batched
         
         # forward
-        x_pred, i_pred = model.forward(t=t, x=x, z=z, v=v, i=i, event_t=event_t, z_jump=z_jump, v_jump=v_jump)
+        x_pred, i_pred, _, _ = model.forward(t=t, x=x, z=z, v=v, i=i, event_t=event_t, z_jump=z_jump, v_jump=v_jump)
         
         # cal loss
         # x loss
+        tmp_mask = torch.sum(mask, axis=1).cpu().detach().numpy()
         losses = Loss_func(x_pred * mask, x * mask, reduction='none')
         tmp_e = torch.sum(losses, axis=1).cpu().detach().numpy()
         x_loss += np.sum(tmp_e)
+        tmp_e /= tmp_mask
         x_loss_per_sample = tmp_e if x_loss_per_sample is None else np.cat([x_loss_per_sample, tmp_e], dim=-1)
         # i loss
         losses = Loss_func(i_pred * mask, i * mask, reduction='none')
         tmp_e = torch.sum(losses, axis=1).cpu().detach().numpy()
         i_loss += np.sum(tmp_e)
+        tmp_e /= tmp_mask
         i_loss_per_sample = tmp_e if i_loss_per_sample is None else np.cat([i_loss_per_sample, tmp_e], dim=-1)
         # mask sum
         mask_sum += torch.sum(mask).cpu().detach().item()
@@ -204,10 +230,11 @@ def evalute_model(model: DAE_Model, eval_dataset: DAE_Curves_Sample, eval_datalo
         
         drawn_pic = 0
         for sample_no, tt, xx, ii, pred_xx, pred_ii in zip(range(len(t)), t, x, i, x_pred, i_pred):
-            if tt[-1] == -1: continue
+            # if tt[-1] == -1: continue
             if tt[-1] != -1: fin_step = tt.shape[0]
             else: fin_step = np.where(tt == -1)[0][0]
-            # if sample_no != 723: continue
+            # if sample_no not in [0, 61, 190, 230, 766]: continue
+            if sample_no not in [0, 162, 281, 352, 777]: continue
             cur_path = pic_path / f'Sample_{sample_no}'
             if not cur_path.exists(): cur_path.mkdir()
             for d_name, true_value, pred_value in zip(data_name,
@@ -298,8 +325,8 @@ if __name__ == '__main__':
         
         # build model
         model = DAE_Model(x_dim=training_dataset.x.shape[-1], z_dim=training_dataset.z.shape[-1],
-                          v_dim=training_dataset.v.shape[-1], i_dim=training_dataset.i.shape[-1],
-                          hidden_dim=hidden_dim).to(device)
+                                v_dim=training_dataset.v.shape[-1], i_dim=training_dataset.i.shape[-1],
+                                hidden_dim=hidden_dim).to(device)
         opt_Adam = torch.optim.Adam(model.parameters(), lr=learning_rate)
         scheduler = torch.optim.lr_scheduler.StepLR(opt_Adam, step_size=sch_step, gamma=sch_gamma)
         
@@ -354,7 +381,7 @@ if __name__ == '__main__':
                 t, x, z, v, i, event_t, z_jump, v_jump, mask = sample_batched
                 
                 # forward
-                x_pred, i_pred = model.forward(t=t, x=x, z=z, v=v, i=i, event_t=event_t, z_jump=z_jump, v_jump=v_jump)
+                x_pred, i_pred, x_re, i_re = model.forward(t=t, x=x, z=z, v=v, i=i, event_t=event_t, z_jump=z_jump, v_jump=v_jump)
                 
                 # cal loss
                 x_loss = (  torch.sum(Loss_func(x_pred, x, reduction='none') * mask)
@@ -362,7 +389,8 @@ if __name__ == '__main__':
                         #   + torch.sum(Loss_func(x_pred[:,:,2:6], x[:,:,2:6], reduction='none') * mask) * 10
                           ) / torch.sum(mask)
                 i_loss = torch.sum(Loss_func(i_pred, i, reduction='none') * mask) / torch.sum(mask)
-                loss = x_loss + i_loss
+                recon_loss = Loss_func(x_re, x) + Loss_func(i_re, i)
+                loss = x_loss + i_loss + Loss_func(x[:, 0, :], x_pred[:, 0, :]) + Loss_func(i[:, 0, :], i_pred[:, 0, :]) + recon_loss
 
                 # backward
                 opt_Adam.zero_grad()
@@ -422,8 +450,8 @@ if __name__ == '__main__':
         
         # build model
         model = DAE_Model(x_dim=testing_dataset.x.shape[-1], z_dim=testing_dataset.z.shape[-1],
-                          v_dim=testing_dataset.v.shape[-1], i_dim=testing_dataset.i.shape[-1],
-                          hidden_dim=hidden_dim).to(device)
+                                v_dim=testing_dataset.v.shape[-1], i_dim=testing_dataset.i.shape[-1],
+                                hidden_dim=hidden_dim).to(device)
         
         # model path
         model_path = pathlib.Path(args.model)
@@ -440,8 +468,11 @@ if __name__ == '__main__':
         logger.testing_log('======================================================================================')
 
         # evaluate model
-        evalute_model(model=model, eval_dataset=testing_dataset, eval_dataloader=testing_dataloader, device=device, logger=logger, desc=f'Model {model_path.name} Evaluation', pic_path=pic_path)
+        eval_error_list = evalute_model(model=model, eval_dataset=testing_dataset, eval_dataloader=testing_dataloader, device=device, logger=logger, desc=f'Model {model_path.name} Evaluation', pic_path=pic_path)
         logger.testing_log('======================================================================================')
+
+        # save results
+        np.savez(str(model_path.parent / 'evaluation.npz'), train_error_list=list(), eval=eval_error_list, dtype=object)        
     elif args.saving:
         assert args.model is not None and args.test_data is not None, 'Model or testing set missing! Pleses check.'
         
@@ -451,8 +482,8 @@ if __name__ == '__main__':
         
         # build model
         model = DAE_Model(x_dim=testing_dataset.x.shape[-1], z_dim=testing_dataset.z.shape[-1],
-                          v_dim=testing_dataset.v.shape[-1], i_dim=testing_dataset.i.shape[-1],
-                          hidden_dim=hidden_dim).to(device)
+                                v_dim=testing_dataset.v.shape[-1], i_dim=testing_dataset.i.shape[-1],
+                                hidden_dim=hidden_dim).to(device)
         
         # model path
         model_path = pathlib.Path(args.model)

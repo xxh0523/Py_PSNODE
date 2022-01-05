@@ -92,8 +92,9 @@ class ODE_Model(nn.Module):
                                                all_initial=all_initial, 
                                                event_fn=self.event.event_fn, 
                                                jump_change_fn= self.event.jump_change_fn)
+        x_re = self.x_decoder(Xh)
         # time, batch, variable -> batch, time, variable
-        return self.x_decoder(Xh_solution).permute(1, 0, 2)
+        return self.x_decoder(Xh_solution).permute(1, 0, 2), x_re.permute(1, 0, 2)
     
     def save_model(self, path: pathlib.Path):
         if not path.exists(): path.mkdir()
@@ -299,10 +300,11 @@ if __name__ == '__main__':
                 t, x, z, event_t, z_jump, mask = sample_batched
                 
                 # forward
-                x_pred = model.forward(t=t, x=x, z=z, event_t=event_t, z_jump=z_jump)
+                x_pred, x_re = model.forward(t=t, x=x, z=z, event_t=event_t, z_jump=z_jump)
                 
                 # cal loss
-                loss = torch.sum(Loss_func(x_pred, x, reduction='none') * mask) / torch.sum(mask) + Loss_func(x[:, 0, :], x_pred[:, 0, :])
+                recon_loss = Loss_func(x_re, x)
+                loss = torch.sum(Loss_func(x_pred, x, reduction='none') * mask) / torch.sum(mask) + Loss_func(x[:, 0, :], x_pred[:, 0, :]) + recon_loss
 
                 # backward
                 opt_Adam.zero_grad()
@@ -357,6 +359,7 @@ if __name__ == '__main__':
         
         # build model
         model = ODE_Model(x_dim=testing_dataset.x.shape[-1], z_dim=testing_dataset.z.shape[-1], hidden_dim=hidden_dim).to(device)
+        # model = ODE_Model_AVR_1_old(x_dim=testing_dataset.x.shape[-1], z_dim=testing_dataset.z.shape[-1], hidden_dim=hidden_dim).to(device)
         
         # model path
         model_path = pathlib.Path(args.model)
