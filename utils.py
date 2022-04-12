@@ -26,6 +26,22 @@ class Logger:
         tqdm.write(string) 
 
 
+class Losses:
+	def __init__(self, log: Logger):
+		self.logger = log
+	
+	def multi_time_series_loss(self, loss: torch.Tensor, limit_loss=None):
+		if torch.any(loss != loss): 
+			self.logger.training_log(f'wrong loss: {loss.detach()}-------------------------------------------------------------------------------------------------------------------------')
+			return torch.sum(loss - loss)
+		if limit_loss is not None and torch.any(loss > 1): 
+			if torch.any(loss > limit_loss): 
+				self.logger.training_log(f'too big loss: {loss.detach()}-------------------------------------------------------------------------------------------------------------------------')
+				return torch.sum(torch.where(loss < 1.0e-6, loss, loss / loss.detach()))
+			return torch.sum(loss)
+		return torch.sum(torch.where(loss < 1.0e-6, loss, loss / loss.detach()))
+
+
 class ReplayBuffer(object):
 	def __init__(self, state_dim, action_dim, max_size=int(1e6)):
 		self.max_size = max_size

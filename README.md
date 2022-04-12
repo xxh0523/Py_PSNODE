@@ -40,7 +40,7 @@ Logger class.
 
 3. Develop more general modules. 
 
-4. Improve performance of the general module and the trained models. The loop function in Python is way too time-consuming.
+4. Improve performance of the general module and the trained models. 
 
 # References
 [1] **T. Xiao**, Y. Chen*, T. He, and H. Guan, “Neural ODE and DAE Modules for Power System Dynamic Component Modeling,” [arxiv](https://arxiv.org/abs/2110.12981).

@@ -8,19 +8,28 @@ from torch.utils.data import Dataset
 
 
 class ODE_Curves_Sample(Dataset):
-    def __init__(self, data_path, device, num_sample=None):
+    def __init__(self, data_path, device, num_sample=None, cut_length=None, contain_larger_than=None):
         super().__init__()
+        self.rng = np.random.default_rng(42)
         sample_file = np.load(data_path, allow_pickle=True)
         total_num = sample_file['t'].shape[0]
-        index = np.arange(total_num)
-        index = np.random.default_rng().choice(index, num_sample) if num_sample is not None else index
+        while True:
+            index = np.arange(total_num)
+            index = self.rng.choice(index, num_sample, replace=False) if num_sample is not None else index
+            if contain_larger_than is None: break
+            else: 
+                if np.any(sample_file['x'][index] > contain_larger_than): break
+        fin_step = sample_file['t'].shape[1] if cut_length is None else min(cut_length, sample_file['t'].shape[1])
         self.data_name = sample_file['name']
-        self.t = torch.from_numpy(sample_file['t'][index]) # num_sample * t_dim * 1
-        self.x = torch.from_numpy(sample_file['x'][index]) # num_sample * t_dim * x_dim
-        self.z = torch.from_numpy(sample_file['z'][index]) # num_sample * t_dim * y_dim
-        self.event_t = torch.from_numpy(sample_file['event_t'][index])#.to(device)
-        self.z_jump = torch.from_numpy(sample_file['z_jump'][index])#.to(device)
-        self.mask = torch.from_numpy(sample_file['mask'][index])#.to(device)
+        self.t = torch.from_numpy(sample_file['t'][index][:, 0:fin_step])#.to(torch.float32) # num_sample * t_dim * 1
+        self.x = torch.from_numpy(sample_file['x'][index][:, 0:fin_step])#.to(torch.float32) # num_sample * t_dim * x_dim
+        self.z = torch.from_numpy(sample_file['z'][index][:, 0:fin_step]) # num_sample * t_dim * y_dim
+        # self.z = torch.from_numpy(sample_file['t'][index][:, 0:fin_step]).to(torch.float32) # num_sample * t_dim * y_dim
+        self.event_t = torch.from_numpy(sample_file['event_t'][index])#.to(torch.float32)#.to(device)
+        self.z_jump = torch.from_numpy(sample_file['z_jump'][index])#.to(torch.float32)#.to(device)
+        if 'mask' in sample_file.files:
+            self.mask = torch.from_numpy(sample_file['mask'][index][:, 0:fin_step])#.to(device)
+        else: self.mask = torch.ones(self.x.shape).to(torch.float32)
         for tt, xx, zz in zip(self.t, self.x, self.z):
             assert tt.shape[0] == xx.shape[0] == zz.shape[0], 'Sample shapes are wrong!'
 
@@ -125,22 +134,28 @@ class ODE_Base(nn.Module):
 
 
 class DAE_Curves_Sample(Dataset):
-    def __init__(self, data_path, device, num_sample=None):
+    def __init__(self, data_path, device, num_sample=None, cut_length=None, contain_larger_than=None):
         super(DAE_Curves_Sample, self).__init__()
+        self.rng = np.random.default_rng(42)
         sample_file = np.load(data_path, allow_pickle=True)
         total_num = sample_file['t'].shape[0]
-        index = np.arange(total_num)
-        index = np.random.default_rng().choice(index, num_sample) if num_sample is not None else index
+        while True:
+            index = np.arange(total_num)
+            index = self.rng.choice(index, num_sample, replace=False) if num_sample is not None else index
+            if contain_larger_than is None: break
+            else: 
+                if np.any(sample_file['x'][index] > contain_larger_than): break
+        fin_step = sample_file['t'].shape[1] if cut_length is None else min(cut_length, sample_file['t'].shape[1])
         self.data_name = sample_file['name']
-        self.t = torch.from_numpy(sample_file['t'][index])#.to(device)
-        self.x = torch.from_numpy(sample_file['x'][index])#.to(device)
-        self.z = torch.from_numpy(sample_file['z'][index])#.to(device)
-        self.v = torch.from_numpy(sample_file['v'][index])#.to(device)
-        self.i = torch.from_numpy(sample_file['i'][index])#.to(device)
+        self.t = torch.from_numpy(sample_file['t'][index][:, 0:fin_step])#.to(device)
+        self.x = torch.from_numpy(sample_file['x'][index][:, 0:fin_step])#.to(device)
+        self.z = torch.from_numpy(sample_file['z'][index][:, 0:fin_step])#.to(device)
+        self.v = torch.from_numpy(sample_file['v'][index][:, 0:fin_step])#.to(device)
+        self.i = torch.from_numpy(sample_file['i'][index][:, 0:fin_step])#.to(device)
         self.event_t = torch.from_numpy(sample_file['event_t'][index])#.to(device)
         self.z_jump = torch.from_numpy(sample_file['z_jump'][index])#.to(device)
         self.v_jump = torch.from_numpy(sample_file['v_jump'][index])#.to(device)
-        self.mask = torch.from_numpy(sample_file['mask'][index])#.to(device)
+        self.mask = torch.from_numpy(sample_file['mask'][index][:, 0:fin_step])#.to(device)
         for tt, xx, zz, vv, ii in zip(self.t, self.x, self.z, self.v, self.i):
             assert tt.shape[0] == xx.shape[0] == zz.shape[0] == vv.shape[0] == ii.shape[0], 'Sample shapes are wrong!'
 

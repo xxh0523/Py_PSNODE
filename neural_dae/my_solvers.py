@@ -1,12 +1,8 @@
-###############################################
-# The code is developed based on torchdiffeq
-# https://github.com/rtqichen/torchdiffeq
-###############################################
-
 import abc
 from os import TMP_MAX
 import torch
 import torch.nn as nn
+import time
 # from TorchDiffEqPack import odesolve_adjoint_sym12
 
 class FixedGridODESolver(metaclass=abc.ABCMeta):
@@ -16,6 +12,10 @@ class FixedGridODESolver(metaclass=abc.ABCMeta):
 
         self.step_size = step_size
         self.interp = interp
+        self.enable_cal_time = False
+        self.assert_time = 0
+        self.cal_time = 0
+        self.total_time = 0
 
         if step_size is None:
             if grid_constructor is None:
@@ -49,13 +49,13 @@ class FixedGridODESolver(metaclass=abc.ABCMeta):
         dx, f0 = self._step_func(func=func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0, v0=v0, i0=i0, all_initial=all_initial)
         return x0 + dx, f0
     
-    def integrate_ODE(self, x_func: nn.Module, t: torch.Tensor, x: torch.Tensor, z: torch.Tensor, all_initial: torch.Tensor, event_fn=None, jump_change_fn=None):
-        assert torch.is_tensor(t) and torch.is_tensor(x) and torch.is_tensor(z), 't or x0 or y is not tensor!'
-        time_grid = self.grid_constructor(x_func, x, t)
-        assert (not torch.any(time_grid[0] != t[0])) and (not torch.any(time_grid[-1] != t[-1])), 'Time grid creation failed!'
-        assert (event_fn is None and jump_change_fn is None) or (event_fn is not None and jump_change_fn is not None), 'Event funtion and jump change funtion do not match!'
-        assert t.device == x.device == z.device, 't, x0, and y are on different devices!'
-        assert time_grid.shape[0] == z.shape[0], 'Dimensions of t and z do not match!'
+    def integrate_ODE(self, x_func: nn.Module, t: torch.Tensor, x: torch.Tensor, z: torch.Tensor, all_initial: torch.Tensor, event_fn=None, jump_change_fn=None, input_true_x=False):
+        # assert torch.is_tensor(t) and torch.is_tensor(x) and torch.is_tensor(z), 't or x0 or y is not tensor!'
+        # time_grid = self.grid_constructor(x_func, x, t)
+        # assert (not torch.any(time_grid[0] != t[0])) and (not torch.any(time_grid[-1] != t[-1])), 'Time grid creation failed!'
+        # assert (event_fn is None and jump_change_fn is None) or (event_fn is not None and jump_change_fn is not None), 'Event funtion and jump change funtion do not match!'
+        # assert t.device == x.device == z.device, 't, x0, and y are on different devices!'
+        # assert time_grid.shape[0] == z.shape[0], 'Dimensions of t and z do not match!'
 
         x0 = x[0]
 
@@ -63,15 +63,15 @@ class FixedGridODESolver(metaclass=abc.ABCMeta):
         x_solution[0] = x0
 
         j = 1
-        for t0, t1, z0 in zip(time_grid[:-1], time_grid[1:], z[:-1]):
+        for t0, t1, z0 in zip(t[:-1], t[1:], z[:-1]):
             dt = t1 - t0
             # support simple event like y jump change
             # TODO complex changes to x, need to rewrite backward function using adjoint sensitivity method
             if event_fn is not None and event_fn(t0) == True:
                 z0_jump = jump_change_fn(t0, z0)
-                x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0_jump, all_initial=all_initial)
+                x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x[j-1], z0=z0_jump, all_initial=all_initial) if input_true_x else self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0_jump, all_initial=all_initial)
             else:
-                x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0, all_initial=all_initial)
+                x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x[j-1], z0=z0, all_initial=all_initial) if input_true_x else self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0, all_initial=all_initial)
 
             x_solution[j] = x1
             x0 = x1
@@ -80,34 +80,42 @@ class FixedGridODESolver(metaclass=abc.ABCMeta):
         return x_solution
 
     def integrate_DAE(self, x_init: torch.Tensor, x_func: nn.Module, i_func: nn.Module, t: torch.Tensor, x: torch.Tensor, z: torch.Tensor, v: torch.Tensor, i: torch.Tensor, all_initial: torch.Tensor, event_fn=None, jump_change_fn=None, input_true_x=False, input_true_i=False):
-        assert torch.is_tensor(t) and torch.is_tensor(x) and torch.is_tensor(z) and torch.is_tensor(v) and torch.is_tensor(i), 't or x0 or y is not tensor!'
-        time_grid = self.grid_constructor(x_func, x, t)
-        assert (not torch.any(time_grid[0] != t[0])) and (not torch.any(time_grid[-1] != t[-1])), 'Time grid creation failed!'
-        assert (event_fn is None and jump_change_fn is None) or (event_fn is not None and jump_change_fn is not None), 'Event funtion and jump change funtion do not match!'
-        assert t.device == x.device == z.device == v.device == i.device, 't, x0, z1, y0, and z2 are on different devices!'
-        assert time_grid.shape[0] == z.shape[0] == v.shape[0] == i.shape[0], 'Dimensions of t, z, v, and i do not match!'
+        # if self.enable_cal_time: self.total_time -= time.time()
+        # if self.enable_cal_time: self.assert_time -= time.time()
+        # assert torch.is_tensor(t) and torch.is_tensor(x) and torch.is_tensor(z) and torch.is_tensor(v) and torch.is_tensor(i), 't or x0 or y is not tensor!'
+        # time_grid = self.grid_constructor(x_func, x, t)
+        # assert (not torch.any(time_grid[0] != t[0])) and (not torch.any(time_grid[-1] != t[-1])), 'Time grid creation failed!'
+        # assert (event_fn is None and jump_change_fn is None) or (event_fn is not None and jump_change_fn is not None), 'Event funtion and jump change funtion do not match!'
+        # assert t.device == x.device == z.device == v.device == i.device, 't, x0, z1, y0, and z2 are on different devices!'
+        # assert time_grid.shape[0] == z.shape[0] == v.shape[0] == i.shape[0], 'Dimensions of t, z, v, and i do not match!'
+        # if self.enable_cal_time: self.assert_time += time.time()
 
         # initial value
         x0 = x_init
         i0 = i_func(xt=x[0], zt=z[0], vt=v[0], all_initial=all_initial) if input_true_x else i_func(xt=x0, zt=z[0], vt=v[0], all_initial=all_initial)
 
-        x_solution = torch.zeros(x.shape, dtype=x.dtype, device=x.device)
+        if x.shape[-1] == 0: x_solution = torch.zeros((*x.shape[0:2], x_init.shape[-1]), dtype=x_init.dtype, device=x.device)
+        else: x_solution = torch.zeros(x.shape, dtype=x.dtype, device=x.device)
         x_solution[0] = x0
         i_solution = torch.zeros(i.shape, dtype=i.dtype, device=i.device)
         i_solution[0] = i0
 
         j = 1
-        for t0, t1, z0, z1, v0, v1 in zip(time_grid[:-1], time_grid[1:], z[:-1], z[1:], v[:-1], v[1:]):
+        for t0, t1, z0, z1, v0, v1 in zip(t[:-1], t[1:], z[:-1], z[1:], v[:-1], v[1:]):
             dt = t1 - t0
             # support simple event like z1 and z2 jump change, resulting in jump change of y
             # TODO complex changes to x, need to rewrite backward function using adjoint sensitivity method
             if event_fn is not None and event_fn(t0) == True:
                 z0_jump, v0_jump = jump_change_fn(t0, z0, v0)
                 i0 = i_func(xt=x0, zt=z0_jump, vt=v0_jump, all_initial=all_initial)
-                if input_true_i: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0_jump, v0=v0_jump, i0=i[j], all_initial=all_initial)
+                if input_true_x and input_true_i: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x[j-1], z0=z0_jump, v0=v0_jump, i0=i[j-1], all_initial=all_initial)
+                elif input_true_x: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x[j-1], z0=z0_jump, v0=v0_jump, i0=i0, all_initial=all_initial)
+                elif input_true_i: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0_jump, v0=v0_jump, i0=i[j-1], all_initial=all_initial)
                 else: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0_jump, v0=v0_jump, i0=i0, all_initial=all_initial)
             else:
-                if input_true_i: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0, v0=v0, i0=i[j-1], all_initial=all_initial)
+                if input_true_x and input_true_i: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x[j-1], z0=z0, v0=v0, i0=i[j-1], all_initial=all_initial)
+                elif input_true_x: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x[j-1], z0=z0, v0=v0, i0=i0, all_initial=all_initial)
+                elif input_true_i: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0, v0=v0, i0=i[j-1], all_initial=all_initial)
                 else: x1, _ = self.step_integrate(func=x_func, t0=t0, dt=dt, t1=t1, x0=x0, z0=z0, v0=v0, i0=i0, all_initial=all_initial)
 
             i1 = i_func(xt=x[j], zt=z1, vt=v1, all_initial=all_initial) if input_true_x else i_func(xt=x1, zt=z1, vt=v1, all_initial=all_initial)

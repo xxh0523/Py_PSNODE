@@ -1,8 +1,3 @@
-###############################################
-# The code is developed based on torchdiffeq
-# https://github.com/rtqichen/torchdiffeq
-###############################################
-
 import torch
 from .my_solvers import FixedGridODESolver
 import torch.nn as nn

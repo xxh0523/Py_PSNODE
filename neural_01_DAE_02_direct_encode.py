@@ -1,4 +1,5 @@
 import argparse, datetime, pathlib, os
+from ast import parse
 from io import UnsupportedOperation
 from functools import reduce
 from threading import RLock
@@ -9,46 +10,44 @@ from torch.nn.modules.batchnorm import BatchNorm1d
 from torch.nn.modules.normalization import LayerNorm
 from torch.quantization import default_eval_fn
 from tqdm.utils import _screen_shape_linux
-from utils import Logger
 from math import e, pi, trunc
-from neural_dae.neural_base import AE_Func, DAE_Base, DAE_Curves_Sample, DAE_Event
+from neural_dae.neural_base import DAE_Base, DAE_Curves_Sample, DAE_Event
 import torch
 import torch.nn as nn
 from torch.nn.modules import dropout, linear
 from tqdm import tqdm
 import numpy as np
 from torch.utils.data import DataLoader
-from neural_dae import ODE_Curves_Sample, ODE_Event, DE_Func, ODE_Base
+from neural_dae import ODE_Curves_Sample, ODE_Event, ODE_Base
 from neural_dae import Euler, Midpoint, RK4
 import matplotlib as mpl
-mpl.use('Agg')
 import matplotlib.pyplot as plt
 import math
 
+from utils import Logger, Losses
+from neural_01_DAE_01_no_encode import evalute_model, output_training_process
+
+mpl.use('Agg')
 
 # debug
-flg_debug = False
-data_path = '/home/xiaotannan/pythonPS/00saved_results/samples/generator_epie/300_gen31_all_4000_masked_samples_gen_0'
-is_training = False
+flg_debug = True
+data_path = '/home/xiaotannan/pythonPS/00saved_results/samples/generator_epie/1000_gen31_all_4000_limit_samples_gen_0_muststable/'
+is_training = True
 is_testing = False
-p_model = '/home/xiaotannan/pythonPS/00saved_results/models/neural_dae/neural_gen_0_20211219_4/model_checkpoint.400'
-# p_model = '00saved_results/models/neural_dae/test'
+# p_model = '/home/xiaotannan/pythonPS/00saved_results/models/neural_dae/neural_gen_0_20220320_4/model_checkpoint.400'
+# p_model = '00saved_results/models/neural_dae/test/model_checkpoint.1'
+p_model = '00saved_results/models/neural_dae/test'
 device_target = 'cpu'
 ncols = 80
 
 # pre settings
-training_sample_num = 800
-batch_size = 16
-testing_sample_num = 800
-hidden_dim = 64
+larger_than = math.pi
 learning_rate = 0.005
 sch_gamma = 0.7
-sch_step = 40
-num_epoch = 400
 loss_record_iter = 10
 Loss_func = nn.functional.mse_loss # mse is not recommended, because omega is way too small in most of the cases
 lamda_x_loss = 1
-gradient_clip = 10
+gradient_clip = 1
 
 # fig set
 pic_num = 5
@@ -59,7 +58,8 @@ mark_size = 2
 class Init_Func(nn.Module):
     def __init__(self, x_dim: int, z_dim: int, v_dim: int, i_dim: int, hidden_dim: int):
         super(Init_Func, self).__init__()
-        self.init_fun = nn.Sequential(nn.Linear(z_dim+v_dim+i_dim, hidden_dim), nn.ELU(),
+        self.init_fun = nn.Sequential(#nn.Linear(z_dim+v_dim+i_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
+                                      nn.Linear(z_dim+v_dim+i_dim, hidden_dim), nn.ELU(),
                                       nn.Linear(hidden_dim, hidden_dim), nn.ELU(),
                                       nn.Linear(hidden_dim, x_dim))
     
@@ -71,10 +71,12 @@ class DE_Func(nn.Module):
     def __init__(self, x_dim: int, z_dim: int, v_dim: int, i_dim: int, hidden_dim: int):
         super(DE_Func, self).__init__()
         if z_dim == 0:
-            self.x_dot = nn.Sequential(nn.Linear(int(3*3*hidden_dim), hidden_dim), nn.ELU(),
+            self.x_dot = nn.Sequential(#nn.Linear(int(3*3*hidden_dim), hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
+                                       nn.Linear(int(3*3*hidden_dim), hidden_dim), nn.ELU(),
                                        nn.Linear(hidden_dim, hidden_dim))
         else:
-            self.x_dot = nn.Sequential(nn.Linear(int(3*4*hidden_dim), hidden_dim), nn.ELU(),
+            self.x_dot = nn.Sequential(#nn.Linear(int(3*4*hidden_dim), hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
+                                       nn.Linear(int(3*4*hidden_dim), hidden_dim), nn.ELU(),
                                        nn.Linear(hidden_dim, hidden_dim))
 
     def forward(self, t0: torch.Tensor, xt: torch.Tensor, zt: torch.Tensor, vt: torch.Tensor, it: torch.Tensor, all_initial: torch.Tensor):
@@ -86,10 +88,12 @@ class AE_Func(nn.Module):
     def __init__(self, x_dim: int, z_dim: int, v_dim: int, i_dim: int, hidden_dim: int):
         super(AE_Func, self).__init__()
         if z_dim == 0:
-            self.i_calculator = nn.Sequential(nn.Linear(int((3+2)*hidden_dim), hidden_dim), nn.ELU(),
+            self.i_calculator = nn.Sequential(#nn.Linear(int((3+2)*hidden_dim), hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
+                                              nn.Linear(int((3+2)*hidden_dim), hidden_dim), nn.ELU(),
                                               nn.Linear(hidden_dim, hidden_dim))
         else:
-            self.i_calculator = nn.Sequential(nn.Linear(int((4+3)*hidden_dim), hidden_dim), nn.ELU(),
+            self.i_calculator = nn.Sequential(#nn.Linear(int((4+3)*hidden_dim), hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU(),
+                                              nn.Linear(int((4+3)*hidden_dim), hidden_dim), nn.ELU(),
                                               nn.Linear(hidden_dim, hidden_dim))
     
     def forward(self, xt: torch.Tensor, zt: torch.Tensor, vt: torch.Tensor, all_initial: torch.Tensor):
@@ -104,7 +108,7 @@ class DAE_Model(nn.Module):
                                        nn.Linear(hidden_dim, hidden_dim))
         self.x_decoder = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ELU(),
                                        nn.Linear(hidden_dim, x_dim))
-        self.z_encoder = nn.Sequential(nn.Linear(z_dim+v_dim, hidden_dim), nn.ELU(),
+        self.z_encoder = nn.Sequential(nn.Linear(z_dim, hidden_dim), nn.ELU(),
                                        nn.Linear(hidden_dim, hidden_dim)) if z_dim != 0 else None
         self.v_encoder = nn.Sequential(nn.Linear(v_dim, hidden_dim), nn.ELU(),
                                        nn.Linear(hidden_dim, hidden_dim))
@@ -171,105 +175,43 @@ class DAE_Model(nn.Module):
         sm.save(str(path / 'de_func.pt'))
         sm = torch.jit.script(self.ae_func)
         sm.save(str(path / 'ae_func.pt'))
-
-
-def evalute_model(model: DAE_Model, eval_dataset: DAE_Curves_Sample, eval_dataloader: DataLoader, device, logger: Logger, desc='', pic_path : pathlib.Path=None):
-    # change to eval
-    model.eval()
-    # evaluation
-    x_loss = 0.0
-    x_loss_per_sample = None
-    i_loss = 0.0
-    i_loss_per_sample = None
-    mask_sum = 0.0
-    for i_batch, data_batch in enumerate(tqdm(eval_dataloader, desc=desc, leave=True, ncols=ncols)):
-        # transfer to device
-        sample_batched = [d.to(device) for d in data_batch]
-        # parse
-        t, x, z, v, i, event_t, z_jump, v_jump, mask = sample_batched
-        
-        # forward
-        x_pred, i_pred, _, _ = model.forward(t=t, x=x, z=z, v=v, i=i, event_t=event_t, z_jump=z_jump, v_jump=v_jump)
-        
-        # cal loss
-        # x loss
-        tmp_mask = torch.sum(mask, axis=1).cpu().detach().numpy()
-        losses = Loss_func(x_pred * mask, x * mask, reduction='none')
-        tmp_e = torch.sum(losses, axis=1).cpu().detach().numpy()
-        x_loss += np.sum(tmp_e)
-        tmp_e /= tmp_mask
-        x_loss_per_sample = tmp_e if x_loss_per_sample is None else np.cat([x_loss_per_sample, tmp_e], dim=-1)
-        # i loss
-        losses = Loss_func(i_pred * mask, i * mask, reduction='none')
-        tmp_e = torch.sum(losses, axis=1).cpu().detach().numpy()
-        i_loss += np.sum(tmp_e)
-        tmp_e /= tmp_mask
-        i_loss_per_sample = tmp_e if i_loss_per_sample is None else np.cat([i_loss_per_sample, tmp_e], dim=-1)
-        # mask sum
-        mask_sum += torch.sum(mask).cpu().detach().item()
-    # print to logger
-    x_loss /= mask_sum
-    i_loss /= mask_sum
-    logger.testing_log(desc + f': x_loss: {x_loss:14.10f}, i_loss: {i_loss:14.10f}.')
-
-    if pic_path is not None:
-        if not pic_path.exists(): pic_path.mkdir()
-
-        data_name = eval_dataset.data_name
-        size = 10
-        mpl.rcParams['xtick.labelsize'] = size
-        mpl.rcParams['ytick.labelsize'] = size
-        logger.testing_log('Picture Drawing')
-        logger.testing_log('======================================================================================')
-
-        x_pred = x_pred.cpu().detach().numpy()
-        i_pred = i_pred.cpu().detach().numpy()
-        t = eval_dataset.t.cpu().numpy()
-        x = eval_dataset.x.cpu().numpy()
-        i = eval_dataset.i.cpu().numpy()
-        
-        drawn_pic = 0
-        for sample_no, tt, xx, ii, pred_xx, pred_ii in zip(range(len(t)), t, x, i, x_pred, i_pred):
-            # if tt[-1] == -1: continue
-            if tt[-1] != -1: fin_step = tt.shape[0]
-            else: fin_step = np.where(tt == -1)[0][0]
-            # if sample_no not in [0, 61, 190, 230, 766]: continue
-            if sample_no not in [0, 162, 281, 352, 777]: continue
-            cur_path = pic_path / f'Sample_{sample_no}'
-            if not cur_path.exists(): cur_path.mkdir()
-            for d_name, true_value, pred_value in zip(data_name,
-                                                      np.concatenate((xx, ii), axis=1).transpose()[:, :fin_step],
-                                                      np.concatenate((pred_xx, pred_ii), axis=1).transpose()[:, :fin_step]):
-                plt.grid()
-                plt.title(f'{d_name[0]}_Epoch_{desc}', fontsize=size)
-                plt.xlabel('Time (s)', fontsize=size)
-                plt.ylabel(f'{d_name[0]} ({d_name[1]})', fontsize=size)
-                plt.plot(tt[:fin_step], true_value, 'b-', label="True value", linewidth=line_width, markersize=mark_size)
-                plt.plot(tt[:fin_step], pred_value, 'r--', label="Predicted value", linewidth=line_width, markersize=mark_size)
-                plt.legend(fontsize=size)
-                plt.savefig(cur_path / f'{d_name[0]}_error_{desc}.jpg', dpi=300, format='jpg')
-                plt.clf()
-                logger.testing_log(f'{d_name[0]} error: total({sum(np.abs(true_value-pred_value)):12.8f} {d_name[1]}), ' + 
-                                    f'average({sum(np.abs(true_value-pred_value))/tt.shape[0]:12.8f} {d_name[1]}), ' + 
-                                    f'max_error({max(np.abs(true_value-pred_value)):12.8f} {d_name[1]}), ' + 
-                                    f'min_error({min(np.abs(true_value-pred_value)):12.8f} {d_name[1]})')
-            logger.testing_log('--------------------------------------------------------------------------------------')
-            drawn_pic += 1
-            if drawn_pic >= pic_num: break
-        plt.close()
     
-    # return errors
-    return np.array([x_loss, i_loss, x_loss_per_sample, i_loss_per_sample], dtype=object)
+    def final_save(self, path: pathlib.Path):
+        if not path.exists(): path.mkdir()
+        with open(str(path / 'dim.txt'), 'w') as f:
+            f.write(str(self.hidden_dim))
+        sm = torch.jit.script(self.x_encoder.to('cpu'))
+        sm.save(str(path / 'x_encoder.pt'))
+        sm = torch.jit.script(self.x_decoder.to('cpu'))
+        sm.save(str(path / 'x_decoder.pt'))
+        if self.z_encoder is not None:
+            sm = torch.jit.script(self.z_encoder.to('cpu'))
+            sm.save(str(path / 'z_encoder.pt'))
+        sm = torch.jit.script(self.v_encoder.to('cpu'))
+        sm.save(str(path / 'v_encoder.pt'))
+        sm = torch.jit.script(self.i_encoder.to('cpu'))
+        sm.save(str(path / 'i_encoder.pt'))
+        sm = torch.jit.script(self.i_decoder.to('cpu'))
+        sm.save(str(path / 'i_decoder.pt'))
+        sm = torch.jit.script(self.init_func.to('cpu'))
+        sm.save(str(path / 'init_func.pt'))
+        sm = torch.jit.script(self.de_func.to('cpu'))
+        sm.save(str(path / 'de_func.pt'))
+        sm = torch.jit.script(self.ae_func.to('cpu'))
+        sm.save(str(path / 'ae_func.pt')) 
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    # device
     parser.add_argument('--device', type=str,
                         help='Choose device to be used, "gpu" or "cpu". Default value is "cpu".',
                         default='cpu')
     parser.add_argument('--id', type=int,
                         help='If using gpu, choose which gpu to be used. Default value is 0.',
                         default=0)
+    
+    # training, testing, saving, drawing
     parser.add_argument('--training', action='store_true',
                         help='Call training process, --train_data and --test_data needed.',
                         required=False)
@@ -282,6 +224,8 @@ if __name__ == '__main__':
     parser.add_argument('--drawing', action='store_true',
                         help='Call drawing pic process, --testing, --model, and --test_data needed.',
                         required=False)
+    
+    # data and model
     parser.add_argument('--train_data', type=str,
                         help='Training data File Path',
                         required=False, default='./results/samples_neural_gen_2_training.npz')
@@ -290,7 +234,25 @@ if __name__ == '__main__':
                         required=False, default='./results/samples_neural_gen_2_testing.npz')
     parser.add_argument('--model', type=str,
                         help='<>\tModel dump/load path, directory can be automatically created, but file must exists.',
-                        required=False, default='./models')
+                        required=False, default='00saved_results/models/neural_dae/test')
+    
+    # training settings
+    parser.add_argument('--num', type=int,
+                        help='Set training set size. Default value is 3200.',
+                        required=False, default=3200)
+    parser.add_argument('--batch', type=int,
+                        help='Set mini-batch size. Default value is 64.',
+                        required=False, default=64)
+    parser.add_argument('--hidden', type=int,
+                        help='Set hidden dimentionality. Default value is 128.',
+                        required=False, default=128)
+    parser.add_argument('--epoch', type=int,
+                        help='Set number of training epoch. Default value is 400.',
+                        required=False, default=400)
+    parser.add_argument('--step', type=int,
+                        help='Set length of training series. Default value is 1001.',
+                        required=False, default=1001)
+
     args = parser.parse_args()
 
     if flg_debug:
@@ -302,6 +264,10 @@ if __name__ == '__main__':
         args.test_data = data_path + '/testing.npz'
         args.model = p_model
         args.device = device_target
+        args.hidden = 64
+        args.epoch = 1
+        args.num = 100
+        args.batch = 2
 
     # device setting
     if args.device.lower() == 'cpu':
@@ -318,17 +284,17 @@ if __name__ == '__main__':
         assert args.train_data is not None and args.test_data is not None, 'Traning set or testing set missing! Please check.'
 
         # load data
-        training_dataset = DAE_Curves_Sample(data_path=args.train_data, device=device, num_sample=training_sample_num)
-        training_dataloader = DataLoader(training_dataset, batch_size=batch_size, shuffle=True)
-        testing_dataset = DAE_Curves_Sample(data_path=args.test_data, device=device)
-        testing_dataloader = DataLoader(testing_dataset, batch_size=testing_sample_num, shuffle=False)
+        training_dataset = DAE_Curves_Sample(data_path=args.train_data, device=device, num_sample=args.num, cut_length=args.step, contain_larger_than=larger_than)
+        training_dataloader = DataLoader(training_dataset, batch_size=args.batch, shuffle=True)
+        testing_dataset = DAE_Curves_Sample(data_path=args.test_data, device=device, cut_length=args.step)
+        testing_dataloader = DataLoader(testing_dataset, batch_size=max(int(testing_dataset.t.shape[0]/10),1), shuffle=False)
         
         # build model
         model = DAE_Model(x_dim=training_dataset.x.shape[-1], z_dim=training_dataset.z.shape[-1],
                                 v_dim=training_dataset.v.shape[-1], i_dim=training_dataset.i.shape[-1],
-                                hidden_dim=hidden_dim).to(device)
+                                hidden_dim=args.hidden).to(device)
         opt_Adam = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        scheduler = torch.optim.lr_scheduler.StepLR(opt_Adam, step_size=sch_step, gamma=sch_gamma)
+        scheduler = torch.optim.lr_scheduler.StepLR(opt_Adam, step_size=max(int(args.epoch/10),1), gamma=sch_gamma)
         
         # model path
         model_path = pathlib.Path(args.model)
@@ -352,23 +318,29 @@ if __name__ == '__main__':
         
         # logger definition
         logger = Logger(model_path, 'training.log', 'testing.log')
-        logger.training_log(f'batch_size_{batch_size}, learning_rate_{learning_rate}, hidden_dim_{hidden_dim}, lamda_x_{lamda_x_loss}，sch_step_{sch_step}, sch_gamma_{sch_gamma}')
-        logger.training_log(f'Use training data: {args.train_data}')
-        logger.training_log(f'Use testing data: {args.test_data}')
+        my_loss = Losses(log=logger)
+        logger.training_log(f'training_data: {args.train_data}, \
+                              testing_data: {args.test_data}, \
+                              train_size: {args.num}, \
+                              batch_size: {args.batch}, \
+                              hidden_dim: {args.hidden}, \
+                              epoch: {args.epoch}, \
+                              cut_length: {args.step}, \
+                              learning_rate: {learning_rate}')
 
         # initial model testing
         logger.testing_log('======================================================================================')
         logger.testing_log(f'Initial evaluate on training set.')
         if args.drawing: pic_path = pathlib.Path(model_path / 'pics')
         else: pic_path = None
-        eval_error_list.append(evalute_model(model, eval_dataset=testing_dataset, eval_dataloader=testing_dataloader, device=device, logger=logger, desc=f'Testing_Epoch_0', pic_path=pic_path))
+        eval_error_list.append(evalute_model(model=model, Loss_func=Loss_func, eval_dataset=testing_dataset, eval_dataloader=testing_dataloader, device=device, logger=logger, desc=f'Testing_Epoch_0', pic_path=pic_path, show_larger_than=larger_than))
         logger.testing_log('======================================================================================')
 
         # start training
         logger.training_log('Start training 2nd-order Neural Generator Model')
         logger.training_log('======================================================================================')
         
-        for epoch in tqdm(range(1, num_epoch+1), desc='Epoch', ncols=ncols):
+        for epoch in tqdm(range(1, args.epoch+1), desc='Epoch', ncols=ncols):
             # set to train
             model.train()
             # if epoch < sch_step: model.solver.flg_input_true_i = True
@@ -435,27 +407,30 @@ if __name__ == '__main__':
             logger.testing_log(f'Training Epoch {epoch}, evaluate on training set.')
             if args.drawing: pic_path = pathlib.Path(model_path / 'pics')
             else: pic_path = None
-            eval_error_list.append(evalute_model(model, eval_dataset=testing_dataset, eval_dataloader=testing_dataloader, device=device, logger=logger, desc=f'Testing_Epoch_{epoch}', pic_path=pic_path))
+            eval_error_list.append(evalute_model(model=model, Loss_func=Loss_func, eval_dataset=testing_dataset, eval_dataloader=testing_dataloader, device=device, logger=logger, desc=f'Testing_Epoch_{epoch}', pic_path=pic_path, show_larger_than=larger_than))
             logger.testing_log('======================================================================================')
 
             # save results
             np.savez(str(model_path / 'train_and_eval.npz'), train=train_error_list, eval=eval_error_list, dtype=object)
+            model.save_model(model_path / 'saved model')
         # fin
+        model.final_save(model_path / 'saved model')
+        output_training_process(logger=logger, eval=eval_error_list)
     elif args.testing:
         assert args.model is not None and args.test_data is not None, 'Model or testing set missing! Pleses check.'
         
         # load data
         testing_dataset = DAE_Curves_Sample(args.test_data, device)
-        testing_dataloader = DataLoader(testing_dataset, batch_size=testing_sample_num, shuffle=False)
+        testing_dataloader = DataLoader(testing_dataset, batch_size=max(int(testing_dataset.t.shape[0]/10),1), shuffle=False)
         
         # build model
         model = DAE_Model(x_dim=testing_dataset.x.shape[-1], z_dim=testing_dataset.z.shape[-1],
-                                v_dim=testing_dataset.v.shape[-1], i_dim=testing_dataset.i.shape[-1],
-                                hidden_dim=hidden_dim).to(device)
+                          v_dim=testing_dataset.v.shape[-1], i_dim=testing_dataset.i.shape[-1],
+                          hidden_dim=args.hidden).to(device)
         
         # model path
         model_path = pathlib.Path(args.model)
-        assert model_path.is_dir() is False and model_path.exists(), f'{model_path} is not a file or does not exist！'
+        assert model_path.is_dir() is False and model_path.exists(), f'{model_path} is not a file or does not exist!'
         model.load_state_dict(torch.load(args.model, map_location=device))
         if args.drawing: pic_path = model_path.parent / 'pics'
         else: pic_path = None
@@ -468,7 +443,7 @@ if __name__ == '__main__':
         logger.testing_log('======================================================================================')
 
         # evaluate model
-        eval_error_list = evalute_model(model=model, eval_dataset=testing_dataset, eval_dataloader=testing_dataloader, device=device, logger=logger, desc=f'Model {model_path.name} Evaluation', pic_path=pic_path)
+        eval_error_list = evalute_model(model=model, Loss_func=Loss_func, eval_dataset=testing_dataset, eval_dataloader=testing_dataloader, device=device, logger=logger, desc=f'Model {model_path.name} Evaluation', pic_path=pic_path, show_larger_than=larger_than)
         logger.testing_log('======================================================================================')
 
         # save results
@@ -478,22 +453,22 @@ if __name__ == '__main__':
         
         # load data
         testing_dataset = DAE_Curves_Sample(args.test_data, device)
-        testing_dataloader = DataLoader(testing_dataset, batch_size=testing_sample_num, shuffle=False)
+        testing_dataloader = DataLoader(testing_dataset, batch_size=max(int(testing_dataset.t.shape[0]/10),1), shuffle=False)
         
         # build model
         model = DAE_Model(x_dim=testing_dataset.x.shape[-1], z_dim=testing_dataset.z.shape[-1],
-                                v_dim=testing_dataset.v.shape[-1], i_dim=testing_dataset.i.shape[-1],
-                                hidden_dim=hidden_dim).to(device)
+                          v_dim=testing_dataset.v.shape[-1], i_dim=testing_dataset.i.shape[-1],
+                          hidden_dim=args.hidden).to(device)
         
         # model path
         model_path = pathlib.Path(args.model)
-        assert model_path.is_dir() is False and model_path.exists(), f'{model_path} is not a file or does not exist！'
+        assert model_path.is_dir() is False and model_path.exists(), f'{model_path} is not a file or does not exist!'
         model.load_state_dict(torch.load(args.model, map_location=device))
         if args.drawing: pic_path = model_path.parent / 'pics'
         else: pic_path = None
 
         # save model
-        model.save_model(model_path.parent / 'saved model')
+        model.final_save(model_path.parent / 'saved model')
         print(f'Model {model_path} saved.')       
     else:
         raise Exception('Unknown task. Set "--training" or "--testing".')
