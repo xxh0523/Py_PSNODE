@@ -33,6 +33,14 @@ Autoencoder-based neural DAE module.
 ## utils
 Logger class.
 
+# Data Files
+
+A sample data file can be downloaded at Baidu web storage:
+
+URL: https://pan.baidu.com/s/1P24h0AQqNS9SAwG1K4wW6g
+
+Code：tiiy
+
 # TODO
 1. Currently, the C++-witten PSOPS can support PyTorch C++ API. However, the python API Py_PSOPS of PSOPS can only successfully load PSOPS.dll/PSOPS.so without PyTorch C++ API. We need to find a way to deal with the violation between Python and PyTorch C++ API when using PyTorch C++ API-integrated PSOPS.dll/PSOPS.so. 
 
