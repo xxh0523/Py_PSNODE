@@ -51,6 +51,6 @@ Code：tiiy
 4. Improve performance of the general module and the trained models. 
 
 # References
-[1] **T. Xiao**, Y. Chen*, T. He, and H. Guan, “Neural ODE and DAE Modules for Power System Dynamic Component Modeling,” [arxiv](https://arxiv.org/abs/2110.12981).
+[1] **T. Xiao**, Y. Chen*, T. He, and H. Guan, “Feasibility Study of Neural ODE and DAE Modules for Power System Dynamic Component Modeling,” [IEEE](https://ieeexplore.ieee.org/document/9844253), [arxiv](https://arxiv.org/abs/2110.12981).
 
-[2] **T. Xiao**, Y. Chen*, J. Wang, S. Huang, W. Tong, and T. He, “Exploration of AI-Oriented Power System Transient Stability Simulations,” [arxiv](http://arxiv.org/abs/2110.00931).
+[2] **T. Xiao**, Y. Chen*, J. Wang, S. Huang, W. Tong, and T. He, “Exploration of Artificial-intelligence Oriented Power System Dynamic Simulators,” [IEEE](https://ieeexplore.ieee.org/document/9833418), [arxiv](http://arxiv.org/abs/2110.00931).
