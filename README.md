@@ -6,11 +6,11 @@ The PyTorch-based ODE solver is developed based on [torchdiffeq](https://github.
 Samples are generated using [Py_PSOPS](https://github.com/xxh0523/Py_PSOPS).
 
 # Environment
--[Windows 7, 8, 10]
+-**Windows 7, 8, 10**
 
--[Linux]
+-**Linux**
 
--[Python 3.6, 3.7, 3.8]
+-**Python 3.6 or later**
 
 # Initialization
 1.  Clone / Pull the codes.
@@ -51,6 +51,6 @@ Code：tiiy
 4. Improve performance of the general module and the trained models. 
 
 # References
-[1] **T. Xiao**, Y. Chen*, T. He, and H. Guan, “Feasibility Study of Neural ODE and DAE Modules for Power System Dynamic Component Modeling,” [IEEE](https://ieeexplore.ieee.org/document/9844253), [arxiv](https://arxiv.org/abs/2110.12981).
+[1] **T. Xiao**, Y. Chen*, T. He, and H. Guan, “Feasibility Study of Neural ODE and DAE Modules for Power System Dynamic Component Modeling,” *IEEE Transactions on Power Systems*, vol. 38, no. 3, pp. 2666–2678, May 2023, doi: [10.1109/TPWRS.2022.3194570](https://ieeexplore.ieee.org/document/9844253), [arxiv](https://arxiv.org/abs/2110.12981).
 
-[2] **T. Xiao**, Y. Chen*, J. Wang, S. Huang, W. Tong, and T. He, “Exploration of Artificial-intelligence Oriented Power System Dynamic Simulators,” [IEEE](https://ieeexplore.ieee.org/document/9833418), [arxiv](http://arxiv.org/abs/2110.00931).
+[2] **T. Xiao**, Y. Chen*, J. Wang, S. Huang, W. Tong, and T. He, “Exploration of Artificial-intelligence Oriented Power System Dynamic Simulators,” *Journal of Modern Power Systems and Clean Energy*, vol. 11, no. 2, pp. 401–411, Mar. 2023, doi: [10.35833/MPCE.2022.000099](https://ieeexplore.ieee.org/document/9833418), [arxiv](http://arxiv.org/abs/2110.00931).
